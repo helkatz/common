@@ -1,0 +1,2 @@
+#define DECLARE_CONVERT(NAME, TYPE)
+#define PROPERTY_LCC(TYPE, NAME, ...)
