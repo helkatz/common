@@ -3,6 +3,7 @@
 
 #include <fstream>
 #include <time.h>
+#include <assert.h>
 //#include <logger/Logger.h>
 
 template<typename T, typename... ARGS>
@@ -13,130 +14,14 @@ namespace common
 {
 	class File
 	{
-		friend class Parser;
-#ifdef USE_FSTREAM
-		std::fstream _fs;
-#else
-		mutable FILE *_fs;
-#endif
-		std::string _fileName;
-#if 0
-		struct Buffer
-		{
-			uint32_t max_size = 0x100000;
-			uint32_t init_size = 0x10000;
-			uint32_t size;
-			char *allocated;
-			char *working;
-			char *keep_at_once;
-			struct Cur
-			{
-				static char noLF;
-				char *head;
-				char *line_tail;
-				char *line_head;
-				//char *keep_at_once;
-				char *lastCR;
-				char *lastLF;
-				Cur()
-				{
-					reset();
-				}
-
-				void reset()
-				{
-					head = nullptr;
-					line_tail = nullptr;
-					line_head = nullptr;
-					lastCR = &noLF;
-					lastLF = &noLF;
-				}
-
-				Cur(const Cur& other) :
-					head(other.head),
-					line_tail(other.line_tail),
-					line_head(other.line_head),
-					lastCR(other.lastCR),
-					lastLF(other.lastLF)
-				{
-
-				}
-
-				void swap(Cur& other)
-				{
-					Cur tmp(*this);
-					*this = other;
-					other = tmp;
-				}
-
-				int clearCRLF(char *buffer)
-				{
-					if (*buffer == '\n')
-						lastLF = buffer;
-					if (*(buffer - 1) == '\r')
-						lastCR = buffer - 1;
-					*lastLF = *lastCR = 0;
-					return (lastLF == buffer ? 1 : 0) + (lastCR == (buffer - 1) ? 1 : 0);
-				}
-
-				int restoreCRLF()
-				{
-					if (*lastLF == ' ' || *lastCR == ' ')
-						_CrtDbgBreak();
-					*lastLF = '\n';
-					*lastCR = '\r';
-					int size = (lastCR != &noLF) + (lastLF != &noLF);
-					lastLF = lastCR = &noLF;
-					return size;
-				}
-			};
-
-			Cur cur;
-			Cur save;
-
-			Buffer() :
-				size(0),
-				allocated(nullptr),
-				working(nullptr),
-				keep_at_once(nullptr)
-			{
-			}
-
-			void reset();
-
-			void resize(uint32_t size, bool append);
-
-			void saveBuffer()
-			{
-				save = cur;
-				save.clearCRLF(save.head);
-			}
-
-			void restoreBuffer()
-			{
-				save.restoreCRLF();
-				cur = save;
-				clearSaveBuffer();
-			}
-
-			void clearSaveBuffer()
-			{
-				save.restoreCRLF();
-				new(&save) Cur;
-
-				//memset(&save, 0, sizeof(save));
-			}
-		};
-#endif
-
 		struct BufferBase
 		{
 			static char noLF;
-			char *head;
-			char *line_tail;
-			char *line_head;
-			char *lastCR;
-			char *lastLF;
+			char *head{ nullptr };
+			char *line_tail{ nullptr };
+			char *line_head{ nullptr };
+			char *lastCR{ &noLF };
+			char *lastLF{ &noLF };
 			BufferBase()
 			{
 				reset();
@@ -144,6 +29,7 @@ namespace common
 
 			void reset()
 			{
+				restoreCRLF();
 				head = nullptr;
 				line_tail = nullptr;
 				line_head = nullptr;
@@ -158,7 +44,17 @@ namespace common
 				lastCR(other.lastCR),
 				lastLF(other.lastLF)
 			{
+			}
 
+			void shift(int32_t offset)
+			{
+				head += offset;
+				line_tail += offset;
+				line_head += offset;
+				if (lastCR != &noLF)
+					lastCR += offset;
+				if (lastLF != &noLF)
+					lastLF += offset;
 			}
 
 			void swap(BufferBase& other)
@@ -180,10 +76,10 @@ namespace common
 
 			int restoreCRLF()
 			{
-				if (*lastLF == ' ' || *lastCR == ' ')
-					_CrtDbgBreak();
+				assert(*lastLF != ' ' && *lastCR != ' ');
+
 				*lastLF = '\n';
-				*lastCR = '\r';
+				*lastCR = '\r';				
 				int size = (lastCR != &noLF) + (lastLF != &noLF);
 				lastLF = lastCR = &noLF;
 				return size;
@@ -191,61 +87,71 @@ namespace common
 		};
 		struct Buffer: BufferBase
 		{
-			uint32_t max_size = 0x100000;
-			uint32_t init_size = 0x10000;
-			uint32_t size;
-			char *allocated;
-			char *working;
-			char *keep_at_once;
-			BufferBase& cur = *this;
+			uint32_t max_size{ 0x100000 };
+			uint32_t init_size{ 0x10000 };
+			uint32_t size{ 0 };
+			uint64_t posInFile{ 0 };
+			uint64_t totalReaded{ 0 };
+			char *allocated{ nullptr };
+			char *working{ nullptr };
+			char *keep_at_once_head{ nullptr };
+			char *keep_at_once_tail{ nullptr };
+			
 			BufferBase save;
 
-			Buffer() :
-				size(0),
-				allocated(nullptr),
-				working(nullptr),
-				keep_at_once(nullptr)
-			{
-			}
+
+			Buffer();
 
 			void reset();
 
-			void resize(uint32_t size, bool append);
+			void resize(uint32_t size, bool append = true);
 
-			void saveBuffer()
+			void shift(int32_t offset)
 			{
-				save = cur;
-				save.clearCRLF(save.head);
+				BufferBase::shift(offset);
+				if (save.head)
+					save.shift(offset);				
+				if (keep_at_once_head)
+					keep_at_once_head += offset;
+				if (keep_at_once_tail)
+					keep_at_once_tail += offset;
 			}
 
-			void restoreBuffer()
-			{
-				save.restoreCRLF();
-				cur = save;
-				clearSaveBuffer();
-			}
-
-			void clearSaveBuffer()
-			{
-				save.restoreCRLF();
-				new(&save) Cur;
-
-				//memset(&save, 0, sizeof(save));
-			}
+			uint32_t readed() { return static_cast<uint32_t>(totalReaded - posInFile); }
 		};
+
+		static const char none = 0;
+		static const char eof = 1;
+		static const char peeked = 2;
+		static const char prepare_peek = 4;
+
+		mutable FILE *_fs{ nullptr };
+		std::string _fileName;
 		Buffer _buf;
 
-		const int eof = 1;
-		const int peeked = 2;
-		const int prepare_peek = 4;
-		char _flags;
-		char _flags_save;
-		uint64_t _bufferStartPos;	/// holds the file pos where the buffer starts
-		uint64_t _totalReaded;
+		struct ReadSize {
+			static const int _max_forward{ std::numeric_limits<int>::max() };
+			static const int _max_backward{ std::numeric_limits<int>::min() };
+			int _size = 0;
+			explicit ReadSize(const int size): _size(size) {
 
-		bool _isClone;
-		uint32_t readBuffer(bool backward = false);
+			}
+
+			static ReadSize max_forward() { return ReadSize{ _max_forward }; };
+			static ReadSize max_backward() { return ReadSize{ _max_backward }; };
+			bool is_max() { return _size == _max_forward || _size == _max_backward;  }
+			bool is_forward(){ return _size > 0; }
+			bool is_backward() { return _size < 0; }
+		};
+
+		char _flags{ none };
+		char _flags_save{ none };
+		
+
+		bool _isClone{ false };
+		uint32_t readBuffer(const ReadSize = ReadSize::max_forward());
 		void resetBuffer();
+		
 	public:
 		File();
 
@@ -259,20 +165,7 @@ namespace common
 
 		~File();
 
-		File& operator = (const File& other)
-		{
-
-			// other._fs;
-			_fileName = other._fileName;
-			_buf = other._buf;
-			_flags = other._flags;
-			_flags_save = other._flags_save;
-			_bufferStartPos = other._bufferStartPos;
-			_totalReaded = other._totalReaded;
-			return *this;
-		}
-
-		void resizeBuffer(uint32_t size, bool append = true);
+		File& operator = (const File& other);
 
 		bool open(const std::string& fileName);
 
