@@ -62,7 +62,7 @@ namespace common {
 			_dumpIndent(0)
 		{
 			this->_typeMap = other._typeMap;
-			cpDebug("Properties Copy Constructor");
+			//cpDebug("Properties Copy Constructor");
 		}
 
 		std::map<std::string, std::string> toStringMap()
@@ -147,7 +147,7 @@ namespace common {
 	public:
 		~PropertiesBase()
 		{
-			cpDebug("~Properties");
+			//cpDebug("~Properties");
 			for (UINT i = 0; i < _typeMap.size(); i++)
 				delete _typeMap.at(i);
 		}

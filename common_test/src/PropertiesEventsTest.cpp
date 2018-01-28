@@ -28,7 +28,7 @@ protected:
 	// this overloaded function handles not assigend properties
 	void onPropertyNotAssigned(const char *name)
 	{
-		cpDebug("onPropertyNotFound %1", name);
+		//cpDebug("onPropertyNotFound %1", name);
 		if (std::string("TestAssignedByEventHandler") == name) {
 			setTestAssignedByEventHandler("assignedByEventHandler");
 		}

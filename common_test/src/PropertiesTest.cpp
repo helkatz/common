@@ -1,6 +1,7 @@
 
 #include <gtest/gtest.h>
 #include "PropertiesTest.h"
+#include <logger/Logger.h>
 #include <iostream>
 #include <array>
 #include <new>
@@ -18,6 +19,9 @@ int main(int argc, char **argv)
 		":xxPerformanceTest*"
 		":PropertiesDataTest*";
 	//::testing::GTEST_FLAG(filter) = "CronTrigger*";
+	logger::Logger::set_level(".*", logger::Logger::Level::Trace10);
+	logger::handlers::ConsoleMessageHandler consoleHandler;
+	logger::Logger::register_message_handler(consoleHandler);
 	return RUN_ALL_TESTS();
 }
 

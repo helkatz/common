@@ -94,5 +94,5 @@ public:
 	}
 
 };
-#define cpDebug(MSG, ...) Logger::getLogger((type_info *)&typeid(this))->debug(FMT(MSG, __VA_ARGS__))
-#define cpDebug_(MSG, ...) Logger::getLogger(__FILE__)->debug(FMT(MSG, __VA_ARGS__))
+#define cpDebug(MSG, ...) Logger::getLogger((type_info *)&typeid(this))->debug(common::sfmt(MSG, __VA_ARGS__))
+#define cpDebug_(MSG, ...) Logger::getLogger(__FILE__)->debug(common::sfmt(MSG, __VA_ARGS__))
