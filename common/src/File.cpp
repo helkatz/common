@@ -123,7 +123,7 @@ namespace common {
 
 	uint64_t File::posHead() const
 	{
-		return !hasNext() ? -1 : _buf.posInFile
+		return _buf.posInFile
 			+ (_buf.line_head - _buf.working)
 			+ (_buf.lastCR != &Buffer::noLF)
 			+ (_buf.lastLF != &Buffer::noLF);
@@ -141,6 +141,7 @@ namespace common {
 		_buf.save.reset();
 		if (pos >= _buf.posInFile && pos < _buf.posInFile + _buf.size && pos < _buf.totalReaded) {
 			_buf.head = _buf.working + pos - _buf.posInFile;
+			_buf.posInBuffer = pos - _buf.posInFile;
 			_buf.line_tail = _buf.head;
 			_buf.line_head = _buf.head;
 			_buf.keep_at_once_tail = nullptr;
@@ -189,19 +190,6 @@ namespace common {
 		return _buf.keep_at_once_tail;
 	}
 
-	void File::resetBuffer()
-	{		
-		if(_buf.allocated)
-			delete[] _buf.allocated;
-		_buf.allocated = new char[RSIZE(_buf.init_size)];
-		_buf.size = _buf.init_size;
-		_buf.working = _buf.allocated;
-		_buf.line_head = _buf.allocated;
-		_buf.line_tail = _buf.allocated;
-		_buf.head = _buf.allocated;
-		_buf.keep_at_once_tail = nullptr;
-	}
-
 	uint32_t File::readBuffer(ReadSize readsize)
 	{
 		char *moveBegin = 
@@ -219,13 +207,22 @@ namespace common {
 			moveEnd = _buf.save.line_head;
 
 		if (!readsize.is_max()) {
-			if (readsize._size < 0)
-				moveEnd = moveEnd - readsize._size;
+			if (readsize.is_backward()) {
+				auto endofBuf = _buf.working + _buf.size;
+				if (moveEnd <= endofBuf + readsize._size)
+					moveEnd = endofBuf + readsize._size;
+				//moveEnd = moveEnd - readsize._size;
+			} 
+			else {
+				if (moveBegin >= _buf.working + readsize._size)
+					moveBegin = _buf.working + readsize._size;
+			}
 		}
 		uint32_t bytesToMove = moveEnd - moveBegin;
-		bytesToMove = std::min(_buf.readed(), bytesToMove);
+		//bytesToMove = std::min(_buf.readed(), bytesToMove);
 		if (bytesToMove >= _buf.size) {
-			_buf.resize(_buf.size + _buf.init_size);
+			if(_buf.resize(_buf.size + _buf.init_size) == false)
+				return 0;
 			return readBuffer(readsize);
 		}
 
@@ -266,9 +263,12 @@ namespace common {
 			uint32_t sizeRead = _buf.size;
 
 			moveOffset = _buf.size - bytesToMove;
-			if (readsize.is_max() == false)
+			if (readsize.is_max() == false) {
 				moveOffset = abs(readsize._size);
-			sizeRead = moveOffset;
+				sizeRead = moveOffset;
+			}
+			else
+				sizeRead -= bytesToMove;
 			if (_buf.posInFile > sizeRead)
 				_buf.posInFile -= sizeRead;
 			else {
@@ -284,15 +284,15 @@ namespace common {
 			size_t readed = 0;
 			//_buf.posInFile += readsize.is_max() ? 0 : readsize._size;
 			if (_fseeki64(_fs, _buf.posInFile, SEEK_SET) == 0) {
-				_buf.totalReaded = _buf.posInFile;
+				//_buf.totalReaded = _buf.posInFile;
 				readed = fread(_buf.working, 1, sizeRead, _fs);
 			}
 			_buf.working[readed + bytesToMove] = 0;
-			_buf.totalReaded += readed;
+			_buf.totalReaded -= readed;
 			log_trace(2) << sfmt("%1% bytes readed", readed);
 			// when no more is readed then seek explicit to start to reset tail/head buffers
-			if (readed == 0)
-				seek(0);
+			//if (readed == 0)
+//				seek(0);
 			assert(_buf.keep_at_once_tail == nullptr || _buf.keep_at_once_tail >= _buf.working);
 			return readed;
 		}
@@ -313,75 +313,18 @@ namespace common {
 			return "";
 		}
 		_buf.restoreCRLF();
-		bool first = true;
-		/*
-		v=_buf.line_tail
-		b=_buf.working
-		b            v
-		\r\nLine0\r\nLine1 then it have to return Line 0 no buffer eload needed
-		v
-		Line1 it have to read Line0 buffer reload needed
-		v
-		Line1
-		b             v>
-		\r\nLine0\r\nLine1 then it have to return Line 1
-		*/
-		enum ReturnType { Undefined = -1, CurrentLine = 0, PrevLine = 1 };
-		ReturnType returnCurrentLine = Undefined;
-		printbuf("readPrevLine");
 
-		if (_buf.line_tail > _buf.working)
-			returnCurrentLine = *(_buf.line_tail - 1) == '\n' ? PrevLine : CurrentLine;
-
-	__L001:
-		int lineBreakSize = (*(_buf.line_tail - 1) == '\n') + (*(_buf.line_tail - 2) == '\r');
-		// the new line has a lineHead when there is a break before  the currentLine 
-		// or current filepos points to the end
-		bool hasLineHead = lineBreakSize > 0 || posTail() == size();
-		_buf.line_tail -= (_flags & eof) ? 0 : lineBreakSize;
 		_buf.line_head = _buf.line_tail;
-		assert(_buf.keep_at_once_tail == nullptr || _buf.keep_at_once_tail >= _buf.working);
-		while (true) {
-			printbuf("readPrevLine while(true)");
-			if (_buf.line_tail > _buf.working) {
-				while (_buf.line_tail > _buf.working && *--_buf.line_tail != '\n');
-				if (*(_buf.line_tail) == '\n') {
-					_buf.line_tail++; // seek to linestart
-					if (hasLineHead) {
-						_buf.clearCRLF(_buf.line_head + lineBreakSize - 1);
-						_buf.line_tail = _buf.line_tail;
-						_flags &= ~eof;
-						return _buf.line_tail;
-					}
-					break;
-				}
-			}
-			// start of file reached
-			if (posTail() == 0) {
-				break;
-			}
-			printbuf("readPrevLine readBuffer");
-			uint32_t readed = readBuffer(ReadSize::max_backward());
-			if (readed <= 0)
-				break;
-			if (returnCurrentLine == Undefined)
-				goto __L001;
+
+		auto neededToTail = readBackwardToLineTail();
+		// when p is on linestart then we read the previous line
+		if (neededToTail == 0) {
+			_buf.line_tail -= _buf.getPrevLineBreakSize();
+			_buf.line_head = _buf.line_tail;
+			readBackwardToLineTail();
 		}
-		assert(_buf.keep_at_once_tail == nullptr || _buf.keep_at_once_tail >= _buf.working);
-		// save the offset not the pointer because buffers can change due readBuffer called in readLine
-		uint32_t bufAtOnceOffset = _buf.keep_at_once_tail == nullptr ? -1 : _buf.keep_at_once_tail - _buf.working;
-		auto save_buf_keep_at_once = _buf.keep_at_once_tail;
-		auto save_buf_working = _buf.working;
-		_buf.keep_at_once_tail = _buf.working + ((_buf.line_tail - _buf.working) / 2);
-		_buf.line_head = _buf.line_tail;
-		char *line = readLine();		
-		_buf.keep_at_once_tail = save_buf_keep_at_once;
-		//assert(save_buf_working == _buf.working);
-		_buf.keep_at_once_tail = bufAtOnceOffset == -1 ? nullptr : _buf.working + bufAtOnceOffset;
-		
-		_flags &= ~eof;
-		
-		return line;
+		auto neededToHead = readForwardToLineHead(ReadSize(100));
+		return _buf.line_tail;
 	}
 
 	char * File::peekLine()
@@ -390,7 +333,7 @@ namespace common {
 			return _buf.save.line_tail;
 
 		// save current status for later restore
-		_flags_save = _flags;
+		//_flags_save = _flags;
 		_buf.save = _buf;
 
 		// set to prepare for the follwong readLine
@@ -398,14 +341,17 @@ namespace common {
 		char * line = readLine();
 
 		// set termination to the end of the previous line
-		_buf.save.clearCRLF(_buf.line_tail - 1);
+		//_buf.save.clearCRLF(_buf.line_tail - 1);
 
 		// in curbuf are the correct values as after an normal readLine
 		// swap this with save witch holds the state before the above read
 		// when the next readLine will be made this bufferes are swaped again 
 		_buf.swap(_buf.save);
-		_flags = _flags & ~prepare_peek | peeked;
-		std::swap(_flags_save, _flags);
+		_flags_save = _flags & eof ? eof : none;
+		_flags = peeked;
+		
+		
+		//std::swap(_flags_save, _flags);
 		
 		return line;
 	}
@@ -420,43 +366,18 @@ namespace common {
 			return _buf.line_tail;
 		}
 		int restored = _buf.restoreCRLF();
-		//bool hasLineHead = *(_buf.line_head + restored - 1) == '\n';
-		// When the current line has a correct head then the new head will start after the current line
-		if (*(_buf.line_head + restored - 1) == '\n') {
-			_buf.line_head = _buf.line_head + restored;
+		_buf.line_head += restored;
+		_buf.line_tail = _buf.line_head;
+		auto neededToHead = readForwardToLineHead();
+		// when neededToHead = 0 then we are on lineend so we read the next line
+		if (neededToHead == 0) {
+			_buf.line_head += _buf.getNextLineBreakSize();
 			_buf.line_tail = _buf.line_head;
+			readForwardToLineHead();
 		}
-		else while(hasPrev()) {
-			while (_buf.line_tail > _buf.working && *--_buf.line_tail != '\n');
-			if (*(_buf.line_tail) == '\n') {
-				_buf.line_tail++;
-				break;
-			}
-			uint32_t readed = readBuffer(ReadSize{ -1000 });
-			if (readed == 0)
-				break;
-		}
-		
-		printbuf("readLine");
-		while (true) {
-			// check for > \n because most chars are true in this case
-			// and that needs just one condition
-			while (*_buf.line_head > '\n' || *_buf.line_head != '\n' && *_buf.line_head) 
-				_buf.line_head++;
-
-			if (*_buf.line_head == '\n') {
-				int cleared = _buf.clearCRLF(_buf.line_head);
-				_buf.line_head -= (cleared - 1);
-				return _buf.line_tail;
-			}
-			else {
-				printbuf("readLine readBuffer");
-				uint32_t readed = readBuffer();
-				if (readed <= 0)
-					break;
-			}
-		}
-		_buf.line_head = _buf.line_head;
+		if (restored)
+			return _buf.line_tail;
+		readBackwardToLineTail(ReadSize(-100));
 		return _buf.line_tail;
 	}
 
@@ -545,13 +466,7 @@ namespace common {
 			char *found = strstr(_buf.line_head, condition);
 			if (found) {
 				_buf.line_tail = _buf.line_head = found;
-				//uint64_t foundPos = posTail();
-				char *line;
-				if (*(_buf.line_tail - 1) == '\n')
-					line = readLine();
-				else
-					line = readPrevLine();
-				return line;
+				return readLine();
 			}
 			if (_buf.totalReaded && *_buf.line_head) {
 				_buf.line_head = _buf.working + _buf.size;
@@ -590,22 +505,22 @@ namespace common {
 		keep_at_once_head = nullptr;
 		keep_at_once_tail = nullptr;
 		head = line_head = line_tail = working = allocated;
+		posInBuffer = 0;
 		*working = 0;
 		totalReaded = posInFile;
 	}
 
-	void File::Buffer::resize(uint32_t newSize, bool append)
+	bool File::Buffer::resize(uint32_t newSize, bool append)
 	{
 		log_debug() << sfmt("resize from %1% to %2%", size, newSize);
 		if (newSize > max_size) {
-			printf("");
-			getchar();
-			return;
+			log_error() << sfmt("newsize exeeds max_size");
+			return false;
 		}
-		char *newBuffer = allocated;
+		
 		if (newSize == size)
-			return;
-		newBuffer = new char[RSIZE(newSize)];
+			return false;
+		char *newBuffer = new char[RSIZE(newSize)];
 		memset(newBuffer, 0, RSIZE(newSize));
 		int32_t offset = 0;
 		if (size) {
@@ -625,35 +540,17 @@ namespace common {
 		offset += (WBUF(newBuffer) - working);
 		shift(offset);
 		working += offset;
-		/*
-		head = WBUF(newBuffer) + offset + (head - working);
-		line_tail = WBUF(newBuffer) + offset + (line_tail - working);
-		line_head = WBUF(newBuffer) + offset + (line_head - working);
-		if (lastLF != &Buffer::noLF) {
-			lastLF = WBUF(newBuffer) + offset + (lastLF - working);
-		}
-		if (lastCR != &Buffer::noLF) {
-			lastCR = WBUF(newBuffer) + offset + (lastCR - working);
-		}
-		if (keep_at_once_tail)
-			keep_at_once_tail = WBUF(newBuffer) + offset + (keep_at_once_tail - working);
 
-		if (save.head) {
-			save.head = WBUF(newBuffer) + offset + (save.head - working);
-			save.line_tail = WBUF(newBuffer) + offset + (save.line_tail - working);
-			save.line_head = WBUF(newBuffer) + offset + (save.line_head - working);
-			if (save.lastLF != &Buffer::noLF) {
-				save.lastLF = WBUF(newBuffer) + offset + (save.lastLF - working);
-			}
-			if (save.lastCR != &Buffer::noLF) {
-				save.lastCR = WBUF(newBuffer) + offset + (save.lastCR - working);
-			}
-		}
-		working = WBUF(newBuffer);
-		*/
 		size = newSize;
 		if (allocated)
 			delete[] allocated;
 		allocated = newBuffer;
+		return true;
+	}
+
+	void File::setBufSize(size_t size)
+	{
+		_buf.init_size = size;
+		_buf.resize(size, true);
 	}
 }

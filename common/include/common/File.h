@@ -66,11 +66,19 @@ namespace common
 
 			int clearCRLF(char *buffer)
 			{
-				if (*buffer == '\n')
+				lastLF = lastCR = &noLF;
+				if (*buffer == '\r') {
+					lastCR = buffer;
+					if(*(buffer + 1) == '\n')
+						lastLF = buffer + 1;
+				}
+				else if (*buffer == '\n') {
 					lastLF = buffer;
-				if (*(buffer - 1) == '\r')
-					lastCR = buffer - 1;
+					if (*(buffer - 1) == '\r')
+						lastCR = buffer - 1;
+				}
 				*lastLF = *lastCR = 0;
+				return (lastLF != &noLF ? 1 : 0) + (lastCR != &noLF ? 1 : 0);
 				return (lastLF == buffer ? 1 : 0) + (lastCR == (buffer - 1) ? 1 : 0);
 			}
 
@@ -87,10 +95,11 @@ namespace common
 		};
 		struct Buffer: BufferBase
 		{
-			uint32_t max_size{ 0x100000 };
-			uint32_t init_size{ 0x10000 };
-			uint32_t size{ 0 };
-			uint64_t posInFile{ 0 };
+			uint32_t max_size{ 0x100000 };	// max buffer size 
+			uint32_t init_size{ 0x10000 };	// init or grow size
+			uint32_t size{ 0 };				// actual buffer size
+			uint32_t posInBuffer{ 0 };		// based on buffer start
+			uint64_t posInFile{ 0 };		// based on file start
 			uint64_t totalReaded{ 0 };
 			char *allocated{ nullptr };
 			char *working{ nullptr };
@@ -104,7 +113,7 @@ namespace common
 
 			void reset();
 
-			void resize(uint32_t size, bool append = true);
+			bool resize(uint32_t size, bool append = true);
 
 			void shift(int32_t offset)
 			{
@@ -118,6 +127,49 @@ namespace common
 			}
 
 			uint32_t readed() { return static_cast<uint32_t>(totalReaded - posInFile); }
+
+			char *readForwardToLineHead()
+			{
+				while (*line_head > '\r' || 
+					*line_head != '\n' && *line_head != '\r' && *line_head) 
+					line_head++;
+
+				if (*line_head == '\n' || *line_head == '\r') {
+					int cleared = clearCRLF(line_head);
+					//line_head -= (cleared - 1);
+					return line_tail;
+				}
+				return nullptr;
+			}
+			char *readBackwardToLineTail()
+			{
+				// when line_tail is in \n then the previous line is required
+				if (line_tail == working && (*line_tail == '\n' || *line_tail == '\r'))
+					return nullptr;
+				while (line_tail > working && *--line_tail != '\n' && *line_tail != '\r');
+
+				if (*(line_tail) == '\n') {
+					return ++line_tail;
+				}
+				if (*(line_tail) == '\r') {
+					return line_tail += (*(line_tail+1) == '\n' ? 2 : 1);
+				}
+				return nullptr;
+			}
+
+			uint8_t getPrevLineBreakSize() 
+			{
+				return (*(line_tail - 1) == '\n')
+					? 1 + (*(line_tail - 2) == '\r')
+					: *(line_tail - 1) == '\r';
+			};
+
+			uint8_t getNextLineBreakSize()
+			{
+				return (*(line_head + 1) == '\n')
+					? 1
+					: (*(line_head + 1) == '\r') + (*(line_head + 2) == '\n');
+			};
 		};
 
 		static const char none = 0;
@@ -150,8 +202,18 @@ namespace common
 
 		bool _isClone{ false };
 		uint32_t readBuffer(const ReadSize = ReadSize::max_forward());
-		void resetBuffer();
-		
+		uint32_t readForwardToLineHead(const ReadSize& readSize = ReadSize::max_forward())
+		{
+			uint32_t pos = posHead();
+			while (_buf.readForwardToLineHead() == nullptr && readBuffer(readSize) > 0);
+			return posHead() - pos;
+		}
+		uint32_t readBackwardToLineTail(const ReadSize& readSize = ReadSize::max_backward())
+		{
+			uint32_t pos = posTail();
+			while (_buf.readBackwardToLineTail() == nullptr && readBuffer(readSize) > 0);
+			return pos - posTail();
+		}
 	public:
 		File();
 
@@ -208,5 +270,7 @@ namespace common
 		char *getBufferAtOnce();
 
 		const std::string& getFileName() const { return _fileName; }
+
+		void setBufSize(size_t);
 	};
 }
